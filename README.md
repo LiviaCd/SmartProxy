@@ -91,7 +91,7 @@ SmartProxy/
 
 1. **Pornește Cassandra și Redis:**
    ```bash
-   docker-compose up -d cassandra redis
+   docker-compose up -d cassandra cassandra2 redis
    ```
 
 2. **Rulează Api:**
@@ -105,6 +105,30 @@ SmartProxy/
    cd Proxy
    dotnet run
    ```
+
+## Testare
+
+### Scripturi de Testare
+
+**Linux/Mac/WSL:**
+```bash
+chmod +x scripts/test-all.sh
+./scripts/test-all.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\scripts\test-all.ps1
+```
+
+Aceste scripturi testează automat:
+- Health checks pentru toate serviciile
+- CRUD operations
+- Load balancing
+- Caching
+- Cluster Cassandra
+
+Vezi `TESTING-GUIDE.md` pentru detalii complete despre testare.
 
 ## Utilizare API
 
@@ -286,13 +310,38 @@ done
 
 ### Test Caching
 
+Ocelot cache-uiește automat răspunsurile pentru GET requests. Pentru a verifica:
+
+**Metoda 1: Măsurarea timpului**
 ```bash
-# Prima cerere - cache miss
+# Prima cerere - cache MISS (contactează backend, ~50-200ms)
 time curl http://localhost:8080/books
 
-# A doua cerere - cache hit (mai rapidă)
+# A doua cerere - cache HIT (din cache, ~1-10ms)
 time curl http://localhost:8080/books
 ```
+
+**Metoda 2: Verificare loguri**
+```bash
+# Vezi logurile proxy-ului pentru cache status
+docker-compose logs -f proxy | grep -i cache
+```
+
+**Metoda 3: Test complet**
+```bash
+# Face 5 cereri și observă diferența de timp
+for i in {1..5}; do
+  echo "Request $i:"
+  time curl -s http://localhost:8080/books > /dev/null
+done
+```
+
+**Indicatori cache funcțional:**
+- ✅ Prima cerere: mai lentă (contactează backend)
+- ✅ Cererile 2-5: mult mai rapide (< 10ms)
+- ✅ Logurile arată cache HIT pentru cereri repetate
+
+Vezi `CACHE-TESTING.md` pentru detalii complete.
 
 ### Test Format Negotiation
 

@@ -1,5 +1,6 @@
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
+using Ocelot.Provider.Polly;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,7 +15,9 @@ builder.Services.AddRazorPages();
 builder.Services.AddControllers();
 
 // Ocelot setup - handles routing, load balancing, and caching
-builder.Services.AddOcelot(builder.Configuration);
+builder.Services.AddOcelot(builder.Configuration)
+    .AddPolly()  // Required for QoSOptions (Circuit Breaker, Timeout)
+    .AddDelegatingHandler<Proxy.DelegatingHandlers.CacheLoggingHandler>();
 
 // Add logging
 if (builder.Environment.IsDevelopment())
