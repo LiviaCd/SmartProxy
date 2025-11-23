@@ -7,30 +7,27 @@ namespace Proxy.Controllers;
 public class HealthController : ControllerBase
 {
     private readonly ILogger<HealthController> _logger;
-    private readonly Proxy.Services.LoadBalancerService _loadBalancer;
-    private readonly Proxy.Services.CacheService _cacheService;
+    private readonly IConfiguration _configuration;
 
     public HealthController(
         ILogger<HealthController> logger,
-        Proxy.Services.LoadBalancerService loadBalancer,
-        Proxy.Services.CacheService cacheService)
+        IConfiguration configuration)
     {
         _logger = logger;
-        _loadBalancer = loadBalancer;
-        _cacheService = cacheService;
+        _configuration = configuration;
     }
 
     [HttpGet]
     public IActionResult HealthCheck()
     {
-        var servers = _loadBalancer.GetAllServers();
-        
+        // Ocelot gestionează load balancing, deci citim configurația din ocelot.json
         return Ok(new
         {
             status = "healthy",
             timestamp = DateTime.UtcNow.ToString("O"),
-            backendServers = servers,
-            cacheEnabled = true
+            gateway = "Ocelot",
+            cacheEnabled = true,
+            message = "Ocelot API Gateway is running"
         });
     }
 }

@@ -14,11 +14,42 @@ services:
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack1
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_SEEDS=cassandra,cassandra2
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
     volumes:
       - cassandra-data:/var/lib/cassandra
       - ./cassandra-backups:/backups
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  cassandra2:
+    image: cassandra:4.1
+    container_name: smartproxy-cassandra2
+    ports:
+      - "9043:9042"  # CQL native transport (port diferit pentru acces local)
+      - "7002:7000"  # Inter-node communication
+      - "7003:7001"  # TLS inter-node communication
+      - "7200:7199"  # JMX
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack2
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_SEEDS=cassandra,cassandra2
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra2-data:/var/lib/cassandra
+      - ./cassandra-backups:/backups
+    depends_on:
+      - cassandra
     networks:
       - smartproxy-network
     healthcheck:
@@ -34,17 +65,25 @@ services:
     depends_on:
       cassandra:
         condition: service_healthy
+      cassandra2:
+        condition: service_healthy
     volumes:
       - ./cassandra-init:/scripts
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        echo "Waiting for Cassandra to be ready..."
+        echo "Waiting for Cassandra nodes to be ready..."
         until cqlsh cassandra -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
-          echo "Cassandra is not ready yet. Waiting..."
+          echo "Cassandra node 1 is not ready yet. Waiting..."
           sleep 2
         done
-        echo "Cassandra is ready! Executing initialization scripts..."
+        until cqlsh cassandra2 -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
+          echo "Cassandra node 2 is not ready yet. Waiting..."
+          sleep 2
+        done
+        echo "Both Cassandra nodes are ready! Waiting for cluster to stabilize..."
+        sleep 10
+        echo "Executing initialization scripts..."
         cqlsh cassandra -f /scripts/01-init-keyspace.cql
         echo "Initialization complete!"
     networks:
@@ -83,11 +122,13 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Cassandra__Hosts=cassandra
+      - Cassandra__Hosts=cassandra,cassandra2
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
     depends_on:
       cassandra:
+        condition: service_healthy
+      cassandra2:
         condition: service_healthy
     networks:
       - smartproxy-network
@@ -108,11 +149,40 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Cassandra__Hosts=cassandra
+      - Cassandra__Hosts=cassandra,cassandra2
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
     depends_on:
       cassandra:
+        condition: service_healthy
+      cassandra2:
+        condition: service_healthy
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  api3:
+    build:
+      context: .
+      dockerfile: Api/Dockerfile
+    container_name: smartproxy-api3
+    ports:
+      - "5002:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Cassandra__Hosts=cassandra,cassandra2
+      - Cassandra__Keyspace=techframer
+      - Cassandra__LocalDatacenter=datacenter1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      cassandra2:
         condition: service_healthy
     networks:
       - smartproxy-network
@@ -140,6 +210,7 @@ services:
     depends_on:
       - api1
       - api2
+      - api3
       - redis
     networks:
       - smartproxy-network
@@ -151,6 +222,8 @@ services:
 
 volumes:
   cassandra-data:
+    driver: local
+  cassandra2-data:
     driver: local
   redis-data:
     driver: local

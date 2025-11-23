@@ -21,10 +21,11 @@ Proiectul constă din două componente principale:
 
 ### Etapa 2: Reverse Proxy (Proxy)
 
-- **Smart Proxy**: Păstrează conexiunile și forward-ează cererile către backend
-- **Caching**: Memorare temporară a răspunsurilor în Redis pentru GET requests
-- **Load Balancing**: Algoritm Round-Robin pentru distribuirea cererilor între multiple instanțe DW
-- **Redis**: Sistem rapid de stocare key-value pentru cache
+- **Ocelot API Gateway**: Proxy implementat folosind Ocelot
+- **Load Balancing**: Algoritm Round-Robin automat între multiple instanțe DW
+- **Caching**: Cache în-memory pentru răspunsuri (configurabil)
+- **Circuit Breaker**: Protecție automată împotriva backend-urilor care eșuează
+- **Quality of Service**: Timeout și retry logic automat
 
 ## Structura Proiectului
 
@@ -35,10 +36,10 @@ SmartProxy/
 │   ├── Models/            # Book, BookCreateRequest, BookUpdateRequest
 │   ├── Services/          # CassandraService
 │   └── Program.cs
-├── Proxy/                  # Reverse Proxy (Etapa 2)
-│   ├── Controllers/       # HealthController
-│   ├── Middleware/         # ReverseProxyMiddleware
-│   ├── Services/           # LoadBalancerService, CacheService
+├── Proxy/                  # Reverse Proxy (Etapa 2) - Ocelot
+│   ├── Controllers/       # HealthController, CacheController
+│   ├── Services/           # CacheService (pentru inspecție)
+│   ├── ocelot.json        # Configurare Ocelot
 │   └── Program.cs
 ├── cassandra-init/         # Scripturi de inițializare Cassandra
 ├── docker-compose.yml      # Configurație Docker pentru toate serviciile
@@ -81,7 +82,9 @@ SmartProxy/
 - **Proxy**: http://localhost:8080
 - **API 1**: http://localhost:5000
 - **API 2**: http://localhost:5001
-- **Cassandra**: localhost:9042
+- **API 3**: http://localhost:5002
+- **Cassandra Node 1**: localhost:9042
+- **Cassandra Node 2**: localhost:9043
 - **Redis**: localhost:6379
 
 ### Rulare locală (dezvoltare)
@@ -147,21 +150,29 @@ curl -X POST http://localhost:8080/books \
 
 ## Funcționalități
 
+### Ocelot API Gateway
+
+Proxy-ul este implementat folosind **Ocelot**, un API Gateway pentru .NET care oferă:
+
 ### Load Balancing (Round-Robin)
 
-Proxy-ul distribuie cererile între multiple instanțe DW folosind algoritmul Round-Robin. Fiecare cerere este direcționată către următorul server disponibil în rotație.
+Ocelot distribuie automat cererile între 3 instanțe DW (api1, api2, api3) folosind algoritmul Round-Robin. Configurarea se face în `ocelot.json`.
 
 ### Caching
 
-- **Cache pentru GET requests**: Răspunsurile la cererile GET sunt cache-uite în Redis
-- **Invalidare automată**: La operațiuni de scriere (POST, PUT, DELETE), cache-ul este invalidat automat
-- **Expirare**: Cache-ul expiră după 5 minute (configurabil)
+- **Cache în-memory**: Răspunsurile sunt cache-uite automat pentru rutele configurate
+- **TTL configurabil**: Cache-ul expiră după 5 minute (configurabil în `ocelot.json`)
+- **Regiuni cache**: Cache-ul poate fi organizat pe regiuni pentru invalidare selectivă
 
-### Smart Proxy
+### Circuit Breaker
 
-- **Păstrare conexiuni**: Proxy-ul menține conexiuni persistente către backend
-- **Forwarding complet**: Headerele și body-ul sunt forward-ate complet
-- **Error handling**: Gestionare erori și retry logic
+- **Protecție automată**: Dacă un backend eșuează de 3 ori, Ocelot oprește temporar cererile către acel backend
+- **Recuperare automată**: După 1 secundă, încearcă din nou
+
+### Quality of Service
+
+- **Timeout**: 5 secunde pentru fiecare cerere
+- **Retry logic**: Gestionare automată a erorilor temporare
 
 ## Configurare
 
@@ -178,14 +189,32 @@ Proxy-ul distribuie cererile între multiple instanțe DW folosind algoritmul Ro
 }
 ```
 
-#### Proxy
+#### Proxy (Ocelot)
+
+Configurarea se face în `ocelot.json`:
+
 ```json
 {
-  "Proxy": {
-    "BackendServers": "http://api1:8080,http://api2:8080",
-    "EnableCaching": true,
-    "CacheExpirationSeconds": 300
-  },
+  "Routes": [
+    {
+      "DownstreamHostAndPorts": [
+        { "Host": "api1", "Port": 8080 },
+        { "Host": "api2", "Port": 8080 }
+      ],
+      "LoadBalancerOptions": {
+        "Type": "RoundRobin"
+      },
+      "FileCacheOptions": {
+        "TtlSeconds": 300
+      }
+    }
+  ]
+}
+```
+
+Pentru inspecția cache-ului (opțional în `appsettings.json`):
+```json
+{
   "Redis": {
     "ConnectionString": "redis:6379"
   }

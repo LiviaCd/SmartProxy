@@ -1,8 +1,8 @@
--- Create keyspace
+-- Create keyspace with replication factor 2 for 2-node cluster
 CREATE KEYSPACE IF NOT EXISTS techframer
 WITH replication = {
     'class': 'SimpleStrategy',
-    'replication_factor': 1
+    'replication_factor': 2
 };
 
 USE techframer;

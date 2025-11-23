@@ -44,7 +44,7 @@ public class CassandraService : IDisposable
                 CREATE KEYSPACE IF NOT EXISTS {keyspace}
                 WITH replication = {{
                     'class': 'SimpleStrategy',
-                    'replication_factor': 1
+                    'replication_factor': 2
                 }}"));
             
             _logger.LogInformation("Keyspace '{Keyspace}' created or already exists", keyspace);
