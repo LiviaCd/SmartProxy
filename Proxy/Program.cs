@@ -1,37 +1,20 @@
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
-using Proxy.Services;
-using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Ocelot Configuration - single ocelot.json file in read-only mode
+// Ocelot Configuration - load ocelot.json file
 builder.Configuration
     .SetBasePath(builder.Environment.ContentRootPath)
-    .AddOcelot(); // single ocelot.json file in read-only mode
+    .AddJsonFile("ocelot.json", optional: false, reloadOnChange: true)
+    .AddEnvironmentVariables();
 
 // Add services to the container.
 builder.Services.AddRazorPages();
 builder.Services.AddControllers();
 
-// Add Redis for cache inspection (CacheController)
-var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
-builder.Services.AddStackExchangeRedisCache(options =>
-{
-    options.Configuration = redisConnectionString;
-});
-
-// Add Redis connection for direct access (for cache inspection)
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-{
-    return ConnectionMultiplexer.Connect(redisConnectionString);
-});
-
 // Ocelot setup - handles routing, load balancing, and caching
 builder.Services.AddOcelot(builder.Configuration);
-
-// Register CacheService only for cache inspection API
-builder.Services.AddSingleton<CacheService>();
 
 // Add logging
 if (builder.Environment.IsDevelopment())

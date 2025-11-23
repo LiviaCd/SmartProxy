@@ -203,10 +203,6 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Proxy__BackendServers=http://api1:8080,http://api2:8080
-      - Proxy__EnableCaching=true
-      - Proxy__CacheExpirationSeconds=300
-      - Redis__ConnectionString=redis:6379
     depends_on:
       - api1
       - api2

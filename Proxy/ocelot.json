@@ -32,44 +32,6 @@
         "TimeoutValue": 5000
       }
     },
-    {
-      "DownstreamPathTemplate": "/health",
-      "DownstreamScheme": "http",
-      "DownstreamHostAndPorts": [
-        {
-          "Host": "api1",
-          "Port": 8080
-        },
-        {
-          "Host": "api2",
-          "Port": 8080
-        },
-        {
-          "Host": "api3",
-          "Port": 8080
-        }
-      ],
-      "UpstreamPathTemplate": "/health",
-      "UpstreamHttpMethod": [ "GET" ],
-      "LoadBalancerOptions": {
-        "Type": "RoundRobin"
-      }
-    },
-    {
-      "DownstreamPathTemplate": "/api/{everything}",
-      "DownstreamScheme": "http",
-      "DownstreamHostAndPorts": [
-        {
-          "Host": "api1",
-          "Port": 8080
-        }
-      ],
-      "UpstreamPathTemplate": "/api/{everything}",
-      "UpstreamHttpMethod": [ "GET", "POST", "PUT", "DELETE" ],
-      "LoadBalancerOptions": {
-        "Type": "RoundRobin"
-      }
-    }
   ],
   "GlobalConfiguration": {
     "BaseUrl": "http://localhost:8080"
