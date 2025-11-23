@@ -1,0 +1,17 @@
+-- Create keyspace
+CREATE KEYSPACE IF NOT EXISTS techframer
+WITH replication = {
+    'class': 'SimpleStrategy',
+    'replication_factor': 1
+};
+
+USE techframer;
+
+-- Create books table
+CREATE TABLE IF NOT EXISTS books (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    author TEXT,
+    year INT
+);
+

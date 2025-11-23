@@ -1,0 +1,160 @@
+version: '3.8'
+
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: smartproxy-cassandra
+    ports:
+      - "9042:9042"  # CQL native transport
+      - "7000:7000"  # Inter-node communication
+      - "7001:7001"  # TLS inter-node communication
+      - "7199:7199"  # JMX
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+      - ./cassandra-backups:/backups
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: smartproxy-cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cassandra-init:/scripts
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Waiting for Cassandra to be ready..."
+        until cqlsh cassandra -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
+          echo "Cassandra is not ready yet. Waiting..."
+          sleep 2
+        done
+        echo "Cassandra is ready! Executing initialization scripts..."
+        cqlsh cassandra -f /scripts/01-init-keyspace.cql
+        echo "Initialization complete!"
+    networks:
+      - smartproxy-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: smartproxy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./redis-backups:/backups
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Persistență robustă: AOF cu fsync la fiecare scriere
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync always
+      --save ""
+      --dir /data
+
+  api1:
+    build:
+      context: .
+      dockerfile: Api/Dockerfile
+    container_name: smartproxy-api1
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Cassandra__Hosts=cassandra
+      - Cassandra__Keyspace=techframer
+      - Cassandra__LocalDatacenter=datacenter1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  api2:
+    build:
+      context: .
+      dockerfile: Api/Dockerfile
+    container_name: smartproxy-api2
+    ports:
+      - "5001:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Cassandra__Hosts=cassandra
+      - Cassandra__Keyspace=techframer
+      - Cassandra__LocalDatacenter=datacenter1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Proxy/Dockerfile
+    container_name: smartproxy-proxy
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+      - Proxy__BackendServers=http://api1:8080,http://api2:8080
+      - Proxy__EnableCaching=true
+      - Proxy__CacheExpirationSeconds=300
+      - Redis__ConnectionString=redis:6379
+    depends_on:
+      - api1
+      - api2
+      - redis
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  cassandra-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  smartproxy-network:
+    driver: bridge
