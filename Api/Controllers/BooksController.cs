@@ -31,12 +31,13 @@ public class BooksController : ControllerBase
                 bookId, request.Title, request.Author, request.Year
             );
 
-            _logger.LogInformation("Book created with ID: {BookId}", bookId);
+            _logger.LogInformation("[BOOKS] Created book: ID={BookId}, Title={Title}, Author={Author}", 
+                bookId, request.Title, request.Author);
             return Ok(new { id = bookId, message = "Book created" });
         }
         catch (UnavailableException ex)
         {
-            _logger.LogError(ex, "Cassandra cluster unavailable when creating book");
+            _logger.LogError(ex, "[BOOKS] CREATE failed - Cassandra unavailable");
             return StatusCode(503, new { 
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
@@ -44,7 +45,7 @@ public class BooksController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error when creating book");
+            _logger.LogError(ex, "[BOOKS] CREATE failed - Unexpected error");
             return StatusCode(500, new { 
                 detail = "An error occurred while creating the book.",
                 error = "Internal Server Error"
@@ -68,11 +69,12 @@ public class BooksController : ControllerBase
                 Year = row.GetValue<int>("year")
             }).ToList();
 
+            _logger.LogInformation("[BOOKS] READ ALL - Retrieved {Count} books", books.Count);
             return Ok(books);
         }
         catch (UnavailableException ex)
         {
-            _logger.LogError(ex, "Cassandra cluster unavailable when reading books");
+            _logger.LogError(ex, "[BOOKS] READ ALL failed - Cassandra unavailable");
             return StatusCode(503, new { 
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
@@ -80,7 +82,7 @@ public class BooksController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error when reading books");
+            _logger.LogError(ex, "[BOOKS] READ ALL failed - Unexpected error");
             return StatusCode(500, new { 
                 detail = "An error occurred while reading books.",
                 error = "Internal Server Error"
@@ -101,6 +103,7 @@ public class BooksController : ControllerBase
 
             if (row == null)
             {
+                _logger.LogWarning("[BOOKS] READ BY ID - Book not found: ID={BookId}", bookId);
                 return NotFound(new { detail = "Book not found" });
             }
 
@@ -112,11 +115,13 @@ public class BooksController : ControllerBase
                 Year = row.GetValue<int>("year")
             };
 
+            _logger.LogInformation("[BOOKS] READ BY ID - Retrieved book: ID={BookId}, Title={Title}", 
+                bookId, book.Title);
             return Ok(book);
         }
         catch (UnavailableException ex)
         {
-            _logger.LogError(ex, "Cassandra cluster unavailable when reading book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] READ BY ID failed - Cassandra unavailable: ID={BookId}", bookId);
             return StatusCode(503, new { 
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
@@ -124,7 +129,7 @@ public class BooksController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error when reading book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] READ BY ID failed - Unexpected error: ID={BookId}", bookId);
             return StatusCode(500, new { 
                 detail = "An error occurred while reading the book.",
                 error = "Internal Server Error"
@@ -146,6 +151,7 @@ public class BooksController : ControllerBase
 
             if (existingRow == null)
             {
+                _logger.LogWarning("[BOOKS] UPDATE - Book not found: ID={BookId}", bookId);
                 return NotFound(new { detail = "Book not found" });
             }
 
@@ -155,12 +161,13 @@ public class BooksController : ControllerBase
                 request.Title, request.Author, request.Year, bookId
             );
 
-            _logger.LogInformation("Book updated with ID: {BookId}", bookId);
+            _logger.LogInformation("[BOOKS] UPDATE - Updated book: ID={BookId}, Title={Title}, Author={Author}", 
+                bookId, request.Title, request.Author);
             return Ok(new { message = "Book updated" });
         }
         catch (UnavailableException ex)
         {
-            _logger.LogError(ex, "Cassandra cluster unavailable when updating book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] UPDATE failed - Cassandra unavailable: ID={BookId}", bookId);
             return StatusCode(503, new { 
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
@@ -168,7 +175,7 @@ public class BooksController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error when updating book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] UPDATE failed - Unexpected error: ID={BookId}", bookId);
             return StatusCode(500, new { 
                 detail = "An error occurred while updating the book.",
                 error = "Internal Server Error"
@@ -190,6 +197,7 @@ public class BooksController : ControllerBase
 
             if (existingRow == null)
             {
+                _logger.LogWarning("[BOOKS] DELETE - Book not found: ID={BookId}", bookId);
                 return NotFound(new { detail = "Book not found" });
             }
 
@@ -199,12 +207,12 @@ public class BooksController : ControllerBase
                 bookId
             );
 
-            _logger.LogInformation("Book deleted with ID: {BookId}", bookId);
+            _logger.LogInformation("[BOOKS] DELETE - Deleted book: ID={BookId}", bookId);
             return Ok(new { message = "Book deleted" });
         }
         catch (UnavailableException ex)
         {
-            _logger.LogError(ex, "Cassandra cluster unavailable when deleting book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] DELETE failed - Cassandra unavailable: ID={BookId}", bookId);
             return StatusCode(503, new { 
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
@@ -212,7 +220,7 @@ public class BooksController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error when deleting book {BookId}", bookId);
+            _logger.LogError(ex, "[BOOKS] DELETE failed - Unexpected error: ID={BookId}", bookId);
             return StatusCode(500, new { 
                 detail = "An error occurred while deleting the book.",
                 error = "Internal Server Error"

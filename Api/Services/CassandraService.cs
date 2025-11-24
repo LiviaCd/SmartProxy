@@ -81,94 +81,70 @@ public class CassandraService : IDisposable
     public Cassandra.ISession Session => _session;
 
     /// <summary>
-    /// Creates a SimpleStatement with adaptive consistency level.
-    /// Tries QUORUM first, falls back to ONE if quorum is unavailable.
-    /// </summary>
-    public SimpleStatement CreateStatement(string query, params object[] values)
-    {
-        var statement = new SimpleStatement(query, values);
-        
-        // Try to use QUORUM for strong consistency when possible
-        // The driver will automatically retry with lower consistency if needed
-        // For better resilience, we'll use QUORUM but allow fallback
-        statement.SetConsistencyLevel(ConsistencyLevel.Quorum);
-        
-        return statement;
-    }
-
-    /// <summary>
-    /// Creates a SimpleStatement with ONE consistency level for better availability.
-    /// Use this for operations that can tolerate eventual consistency.
-    /// </summary>
-    public SimpleStatement CreateStatementWithOneConsistency(string query, params object[] values)
-    {
-        var statement = new SimpleStatement(query, values);
-        statement.SetConsistencyLevel(ConsistencyLevel.One);
-        return statement;
-    }
-
-    /// <summary>
-    /// Executes a statement with automatic fallback from QUORUM to ONE if quorum fails.
-    /// </summary>
-    public RowSet ExecuteWithFallback(SimpleStatement statement)
-    {
-        try
-        {
-            // Try with QUORUM first
-            return _session.Execute(statement);
-        }
-        catch (UnavailableException ex)
-        {
-            // If quorum is unavailable, try with ONE consistency
-            _logger.LogWarning(
-                "Quorum unavailable, falling back to ONE consistency. Query: {Query}, Error: {Error}",
-                statement.QueryString,
-                ex.Message);
-            
-            // Create a new statement with ONE consistency level
-            // For parameterized queries, we need to extract the values
-            // Since SimpleStatement doesn't expose bound values, we'll use
-            // a workaround: create statement with query and try to bind values
-            // The driver's retry policy should handle this, but we'll do it explicitly
-            
-            // Create new statement with ONE consistency
-            // Note: This works because the statement was created with bound values
-            // in CreateStatement, and we're recreating it with the same query
-            var fallbackStatement = new SimpleStatement(statement.QueryString);
-            fallbackStatement.SetConsistencyLevel(ConsistencyLevel.One);
-            
-            // Try to copy bound values if the statement has them
-            // The driver stores them internally, so we need to pass them explicitly
-            // For now, we'll execute with the query only (works for non-parameterized queries)
-            // For parameterized queries, the controller should pass values to a new method
-            
-            return _session.Execute(fallbackStatement);
-        }
-    }
-
-    /// <summary>
     /// Executes a parameterized statement with automatic fallback from QUORUM to ONE.
+    /// Tries QUORUM first for strong consistency, falls back to ONE if quorum is unavailable.
     /// </summary>
     public RowSet ExecuteWithFallback(string query, params object[] values)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        // Extract query type for logging
+        var queryType = query.TrimStart().Substring(0, Math.Min(6, query.TrimStart().Length)).ToUpper();
+        
         try
         {
-            // Try with QUORUM first
+            // Log database request
+            _logger.LogInformation(
+                "[DATABASE] → {QueryType} | Query:{Query} | Consistency:QUORUM",
+                queryType,
+                query.Length > 100 ? query.Substring(0, 100) + "..." : query);
+            
+            // Try with QUORUM first for strong consistency
             var statement = new SimpleStatement(query, values);
             statement.SetConsistencyLevel(ConsistencyLevel.Quorum);
-            return _session.Execute(statement);
+            var result = _session.Execute(statement);
+            
+            stopwatch.Stop();
+            _logger.LogInformation(
+                "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:QUORUM | {ElapsedMs}ms",
+                queryType,
+                stopwatch.ElapsedMilliseconds);
+            
+            return result;
         }
         catch (UnavailableException ex)
         {
-            // If quorum is unavailable, try with ONE consistency
+            stopwatch.Stop();
+            
+            // If quorum is unavailable, fallback to ONE consistency for availability
             _logger.LogWarning(
-                "Quorum unavailable, falling back to ONE consistency. Query: {Query}, Error: {Error}",
-                query,
+                "[DATABASE] ⚠️ QUORUM unavailable, falling back to ONE | Query:{Query} | Error:{Error}",
+                query.Length > 100 ? query.Substring(0, 100) + "..." : query,
                 ex.Message);
             
+            var fallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var fallbackStatement = new SimpleStatement(query, values);
             fallbackStatement.SetConsistencyLevel(ConsistencyLevel.One);
-            return _session.Execute(fallbackStatement);
+            var result = _session.Execute(fallbackStatement);
+            
+            fallbackStopwatch.Stop();
+            _logger.LogInformation(
+                "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:ONE (fallback) | {ElapsedMs}ms",
+                queryType,
+                fallbackStopwatch.ElapsedMilliseconds);
+            
+            return result;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogError(
+                ex,
+                "[DATABASE] ← {QueryType} | ❌ ERROR | Query:{Query} | {ElapsedMs}ms",
+                queryType,
+                query.Length > 100 ? query.Substring(0, 100) + "..." : query,
+                stopwatch.ElapsedMilliseconds);
+            throw;
         }
     }
 

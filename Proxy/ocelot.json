@@ -22,10 +22,9 @@
       "LoadBalancerOptions": {
         "Type": "RoundRobin"
       },
-      "FileCacheOptions": {
+      "CacheOptions": {
         "TtlSeconds": 300,
-        "Region": "books",
-        "Header": "Accept"
+        "Region": "books"
       },
       "QoSOptions": {
         "ExceptionsAllowedBeforeBreaking": 3,

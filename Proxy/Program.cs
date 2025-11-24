@@ -1,3 +1,4 @@
+using Ocelot.Cache.CacheManager;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
 using Ocelot.Provider.Polly;
@@ -24,6 +25,7 @@ builder.Services.AddControllers(options =>
 
 // Ocelot setup - handles routing, load balancing, and caching
 builder.Services.AddOcelot(builder.Configuration)
+    .AddCacheManager(x => x.WithDictionaryHandle())  // Enable in-memory caching
     .AddPolly()  // Required for QoSOptions (Circuit Breaker, Timeout)
     .AddDelegatingHandler<Proxy.DelegatingHandlers.CacheLoggingHandler>();
 

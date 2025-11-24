@@ -21,10 +21,10 @@ public class HealthController : ControllerBase
     {
         try
         {
-            // Check Cassandra connection
-            var statement = _cassandraService.CreateStatement("SELECT now() FROM system.local");
-            _cassandraService.Session.Execute(statement);
+            // Check Cassandra connection with fallback support
+            _cassandraService.ExecuteWithFallback("SELECT now() FROM system.local");
             
+            _logger.LogDebug("Health check: Cassandra connected");
             return Ok(new
             {
                 status = "healthy",
@@ -34,6 +34,7 @@ public class HealthController : ControllerBase
         }
         catch (Exception e)
         {
+            _logger.LogError(e, "Health check: Cassandra connection failed");
             return Ok(new
             {
                 status = "unhealthy",

@@ -22,11 +22,10 @@ public class CacheLoggingHandler : DelegatingHandler
         var downstreamUrl = request.RequestUri?.ToString() ?? "unknown";
         
         _logger.LogInformation(
-            "[DOWNSTREAM REQUEST] {Method} {Url} | Accept: {AcceptHeader} | Content-Type: {ContentType}",
+            "[PROXY→API] → {Method} {Url} | Accept:{AcceptHeader}",
             request.Method,
             downstreamUrl,
-            acceptHeader,
-            request.Content?.Headers?.ContentType?.ToString() ?? "none");
+            acceptHeader);
 
         var response = await base.SendAsync(request, cancellationToken);
         
@@ -54,10 +53,13 @@ public class CacheLoggingHandler : DelegatingHandler
         else if (!string.IsNullOrEmpty(contentType))
             responseFormat = contentType;
 
+        var statusEmoji = (int)response.StatusCode >= 200 && (int)response.StatusCode < 300 ? "✅" : 
+                         (int)response.StatusCode >= 400 ? "❌" : "⚠️";
         _logger.LogInformation(
-            "[DOWNSTREAM RESPONSE] {Method} {Path} | Status: {StatusCode} | Format: {ResponseFormat} | Cache: {CacheStatus} | Time: {ElapsedMs}ms | Size: {Size} bytes",
+            "[PROXY→API] ← {Method} {Path} | {StatusEmoji} {StatusCode} | Format:{ResponseFormat} | Cache:{CacheStatus} | Time:{ElapsedMs}ms | Size:{Size}B",
             request.Method,
             request.RequestUri?.PathAndQuery,
+            statusEmoji,
             (int)response.StatusCode,
             responseFormat,
             cacheStatus,
