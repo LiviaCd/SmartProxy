@@ -1,8 +1,26 @@
 using Api.Services;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
+using ZiggyCreatures.Caching.Fusion;
+using ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
+builder.Services
+    .AddFusionCache()
+    .WithDistributedCache(_ =>
+    {
+        var connectionString = builder.Configuration["Redis:ConnectionString"];
+        var options = new RedisCacheOptions
+        {
+            Configuration = connectionString,
+
+        };
+        options.InstanceName = "book-app";
+
+        return new RedisCache(options);
+    })
+    .WithSerializer(new FusionCacheSystemTextJsonSerializer());
 
 builder.Services.AddControllers(options =>
     {

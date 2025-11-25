@@ -2,6 +2,9 @@ using Api.Models;
 using Api.Services;
 using Cassandra;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
+using System;
+using ZiggyCreatures.Caching.Fusion;
 
 namespace Api.Controllers;
 
@@ -10,13 +13,15 @@ namespace Api.Controllers;
 public class BooksController : ControllerBase
 {
     private readonly CassandraService _cassandraService;
-    private readonly ILogger<BooksController> _logger;
+    private readonly IFusionCache _cache;
 
-    public BooksController(CassandraService cassandraService, ILogger<BooksController> logger)
+    public BooksController(CassandraService cassandraService, IFusionCache cache)
     {
         _cassandraService = cassandraService;
-        _logger = logger;
+        _cache = cache;
     }
+
+    private static string CacheKey(Guid id) => $"book:{id}";
 
     // CREATE
     [HttpPost]
@@ -25,28 +30,34 @@ public class BooksController : ControllerBase
         try
         {
             var bookId = Guid.NewGuid();
-            
+
             _cassandraService.ExecuteWithFallback(
                 "INSERT INTO books (id, title, author, year) VALUES (?, ?, ?, ?)",
                 bookId, request.Title, request.Author, request.Year
             );
 
-            _logger.LogInformation("[BOOKS] Created book: ID={BookId}, Title={Title}, Author={Author}", 
-                bookId, request.Title, request.Author);
+            _cache.SetAsync(CacheKey(bookId), new Book
+            {
+                Id = bookId,
+                Title = request.Title,
+                Author = request.Author,
+                Year = request.Year
+            });
+
             return Ok(new { id = bookId, message = "Book created" });
         }
-        catch (UnavailableException ex)
+        catch (UnavailableException)
         {
-            _logger.LogError(ex, "[BOOKS] CREATE failed - Cassandra unavailable");
-            return StatusCode(503, new { 
+            return StatusCode(503, new
+            {
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
             });
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "[BOOKS] CREATE failed - Unexpected error");
-            return StatusCode(500, new { 
+            return StatusCode(500, new
+            {
                 detail = "An error occurred while creating the book.",
                 error = "Internal Server Error"
             });
@@ -60,7 +71,7 @@ public class BooksController : ControllerBase
         try
         {
             var rows = _cassandraService.ExecuteWithFallback("SELECT * FROM books");
-            
+
             var books = rows.Select(row => new Book
             {
                 Id = row.GetValue<Guid>("id"),
@@ -69,68 +80,73 @@ public class BooksController : ControllerBase
                 Year = row.GetValue<int>("year")
             }).ToList();
 
-            _logger.LogInformation("[BOOKS] READ ALL - Retrieved {Count} books", books.Count);
             return Ok(books);
         }
-        catch (UnavailableException ex)
+        catch (UnavailableException)
         {
-            _logger.LogError(ex, "[BOOKS] READ ALL failed - Cassandra unavailable");
-            return StatusCode(503, new { 
+            return StatusCode(503, new
+            {
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
             });
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "[BOOKS] READ ALL failed - Unexpected error");
-            return StatusCode(500, new { 
+            return StatusCode(500, new
+            {
                 detail = "An error occurred while reading books.",
                 error = "Internal Server Error"
             });
         }
     }
 
-    // READ BY ID
+    // READ BY ID + CACHE
     [HttpGet("{bookId}")]
-    public IActionResult GetBook(Guid bookId)
+    public async Task<IActionResult> GetBook(Guid bookId)
     {
         try
         {
-            var row = _cassandraService.ExecuteWithFallback(
-                "SELECT * FROM books WHERE id = ?",
-                bookId
-            ).FirstOrDefault();
+            // CACHE
+            var book = await _cache.GetOrSetAsync(
+                CacheKey(bookId),
+                async _ =>
+                {
+                    var row = _cassandraService.ExecuteWithFallback(
+                        "SELECT * FROM books WHERE id = ?",
+                        bookId
+                    ).FirstOrDefault();
 
-            if (row == null)
-            {
-                _logger.LogWarning("[BOOKS] READ BY ID - Book not found: ID={BookId}", bookId);
+                    if (row == null)
+                        return null;
+
+                    return new Book
+                    {
+                        Id = row.GetValue<Guid>("id"),
+                        Title = row.GetValue<string>("title"),
+                        Author = row.GetValue<string>("author"),
+                        Year = row.GetValue<int>("year")
+                    };
+                },
+                TimeSpan.FromMinutes(5)
+            );
+
+            if (book == null)
                 return NotFound(new { detail = "Book not found" });
-            }
 
-            var book = new Book
-            {
-                Id = row.GetValue<Guid>("id"),
-                Title = row.GetValue<string>("title"),
-                Author = row.GetValue<string>("author"),
-                Year = row.GetValue<int>("year")
-            };
-
-            _logger.LogInformation("[BOOKS] READ BY ID - Retrieved book: ID={BookId}, Title={Title}", 
-                bookId, book.Title);
             return Ok(book);
         }
-        catch (UnavailableException ex)
+        catch (UnavailableException)
         {
-            _logger.LogError(ex, "[BOOKS] READ BY ID failed - Cassandra unavailable: ID={BookId}", bookId);
-            return StatusCode(503, new { 
-                detail = "Database temporarily unavailable. Please try again later.",
+            return StatusCode(503, new
+            {
+                detail = "Database temporarily unavailable. Please try later.",
                 error = "Service Unavailable"
             });
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "[BOOKS] READ BY ID failed - Unexpected error: ID={BookId}", bookId);
-            return StatusCode(500, new { 
+            return StatusCode(500, new
+            {
                 detail = "An error occurred while reading the book.",
                 error = "Internal Server Error"
             });
@@ -139,44 +155,46 @@ public class BooksController : ControllerBase
 
     // UPDATE
     [HttpPut("{bookId}")]
-    public IActionResult UpdateBook(Guid bookId, [FromBody] BookUpdateRequest request)
+    public async Task<IActionResult> UpdateBook(Guid bookId, [FromBody] BookUpdateRequest request)
     {
         try
         {
-            // Check if book exists
-            var existingRow = _cassandraService.ExecuteWithFallback(
+            var existing = _cassandraService.ExecuteWithFallback(
                 "SELECT id FROM books WHERE id = ?",
                 bookId
             ).FirstOrDefault();
 
-            if (existingRow == null)
-            {
-                _logger.LogWarning("[BOOKS] UPDATE - Book not found: ID={BookId}", bookId);
+            if (existing == null)
                 return NotFound(new { detail = "Book not found" });
-            }
 
-            // Update book
             _cassandraService.ExecuteWithFallback(
                 "UPDATE books SET title = ?, author = ?, year = ? WHERE id = ?",
                 request.Title, request.Author, request.Year, bookId
             );
 
-            _logger.LogInformation("[BOOKS] UPDATE - Updated book: ID={BookId}, Title={Title}, Author={Author}", 
-                bookId, request.Title, request.Author);
+            // Update cache
+            await _cache.SetAsync(CacheKey(bookId), new Book
+            {
+                Id = bookId,
+                Title = request.Title,
+                Author = request.Author,
+                Year = request.Year
+            });
+
             return Ok(new { message = "Book updated" });
         }
-        catch (UnavailableException ex)
+        catch (UnavailableException)
         {
-            _logger.LogError(ex, "[BOOKS] UPDATE failed - Cassandra unavailable: ID={BookId}", bookId);
-            return StatusCode(503, new { 
+            return StatusCode(503, new
+            {
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
             });
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "[BOOKS] UPDATE failed - Unexpected error: ID={BookId}", bookId);
-            return StatusCode(500, new { 
+            return StatusCode(500, new
+            {
                 detail = "An error occurred while updating the book.",
                 error = "Internal Server Error"
             });
@@ -185,47 +203,34 @@ public class BooksController : ControllerBase
 
     // DELETE
     [HttpDelete("{bookId}")]
-    public IActionResult DeleteBook(Guid bookId)
+    public async Task<IActionResult> DeleteBook(Guid bookId)
     {
         try
         {
-            // Check if book exists
-            var existingRow = _cassandraService.ExecuteWithFallback(
+            var existing = _cassandraService.ExecuteWithFallback(
                 "SELECT id FROM books WHERE id = ?",
                 bookId
             ).FirstOrDefault();
 
-            if (existingRow == null)
-            {
-                _logger.LogWarning("[BOOKS] DELETE - Book not found: ID={BookId}", bookId);
+            if (existing == null)
                 return NotFound(new { detail = "Book not found" });
-            }
 
-            // Delete book
             _cassandraService.ExecuteWithFallback(
                 "DELETE FROM books WHERE id = ?",
                 bookId
             );
 
-            _logger.LogInformation("[BOOKS] DELETE - Deleted book: ID={BookId}", bookId);
+            await _cache.RemoveAsync(CacheKey(bookId));
+
             return Ok(new { message = "Book deleted" });
         }
-        catch (UnavailableException ex)
+        catch (UnavailableException)
         {
-            _logger.LogError(ex, "[BOOKS] DELETE failed - Cassandra unavailable: ID={BookId}", bookId);
-            return StatusCode(503, new { 
+            return StatusCode(503, new
+            {
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
             });
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[BOOKS] DELETE failed - Unexpected error: ID={BookId}", bookId);
-            return StatusCode(500, new { 
-                detail = "An error occurred while deleting the book.",
-                error = "Internal Server Error"
-            });
-        }
     }
 }
-
