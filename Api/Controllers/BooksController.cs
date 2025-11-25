@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using System.Threading.Tasks;
 using System;
 using ZiggyCreatures.Caching.Fusion;
+using Microsoft.Extensions.Logging;
 
 namespace Api.Controllers;
 
@@ -14,11 +15,13 @@ public class BooksController : ControllerBase
 {
     private readonly CassandraService _cassandraService;
     private readonly IFusionCache _cache;
+    private readonly ILogger<BooksController> _logger;
 
-    public BooksController(CassandraService cassandraService, IFusionCache cache)
+    public BooksController(CassandraService cassandraService, IFusionCache cache, ILogger<BooksController> logger)
     {
         _cassandraService = cassandraService;
         _cache = cache;
+        _logger = logger;
     }
 
     private static string CacheKey(Guid id) => $"book:{id}";
@@ -106,11 +109,24 @@ public class BooksController : ControllerBase
     {
         try
         {
-            // CACHE
+            var cacheKey = CacheKey(bookId);
+            
+            // Try to get from cache first
+            var cachedBook = await _cache.TryGetAsync<Book>(cacheKey);
+            if (cachedBook.HasValue)
+            {
+                _logger.LogInformation("[CACHE] ✅ HIT | Key:{CacheKey} | BookId:{BookId}", cacheKey, bookId);
+                return Ok(cachedBook.Value);
+            }
+
+            // CACHE MISS - get from database
+            _logger.LogInformation("[CACHE] ❌ MISS | Key:{CacheKey} | BookId:{BookId} | Fetching from database...", cacheKey, bookId);
+            
             var book = await _cache.GetOrSetAsync(
-                CacheKey(bookId),
+                cacheKey,
                 async _ =>
                 {
+                    _logger.LogInformation("[CACHE] 🔄 FETCHING | Key:{CacheKey} | BookId:{BookId} | Querying database...", cacheKey, bookId);
                     var row = _cassandraService.ExecuteWithFallback(
                         "SELECT * FROM books WHERE id = ?",
                         bookId
@@ -133,6 +149,7 @@ public class BooksController : ControllerBase
             if (book == null)
                 return NotFound(new { detail = "Book not found" });
 
+            _logger.LogInformation("[CACHE] ✅ SET | Key:{CacheKey} | BookId:{BookId} | Cached for 5 minutes", cacheKey, bookId);
             return Ok(book);
         }
         catch (UnavailableException)

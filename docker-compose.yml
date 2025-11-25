@@ -97,6 +97,7 @@ services:
     volumes:
       - redis-data:/data
       - ./redis-backups:/backups
+      - ./redis-users.acl:/usr/local/etc/redis/users.acl
     networks:
       - smartproxy-network
     healthcheck:
@@ -104,14 +105,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Persistență robustă: AOF cu fsync la fiecare scriere
     command: >
       redis-server
       --appendonly yes
       --appendfsync always
       --save ""
       --dir /data
-
+      --aclfile /usr/local/etc/redis/users.acl
   api1:
     build:
       context: .
@@ -125,6 +125,10 @@ services:
       - Cassandra__Hosts=cassandra,cassandra2
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
+      - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
+      - Redis__Port=16344
+      - Redis__User=default
+      - REDIS_PASSWORD=nbQchYjO6DDBido3OkgGYpIKsTu6fV1m
     depends_on:
       cassandra:
         condition: service_healthy
@@ -152,6 +156,10 @@ services:
       - Cassandra__Hosts=cassandra,cassandra2
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
+      - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
+      - Redis__Port=16344
+      - Redis__User=default
+      - REDIS_PASSWORD=nbQchYjO6DDBido3OkgGYpIKsTu6fV1m
     depends_on:
       cassandra:
         condition: service_healthy
@@ -179,6 +187,10 @@ services:
       - Cassandra__Hosts=cassandra,cassandra2
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
+      - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
+      - Redis__Port=16344
+      - Redis__User=default
+      - REDIS_PASSWORD=nbQchYjO6DDBido3OkgGYpIKsTu6fV1m
     depends_on:
       cassandra:
         condition: service_healthy

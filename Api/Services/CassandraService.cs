@@ -93,8 +93,13 @@ public class CassandraService : IDisposable
         
         try
         {
+            // Check if this is a health check query (less verbose logging)
+            var isHealthCheck = query.Contains("SELECT now() FROM system.local");
+            var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
+            
             // Log database request
-            _logger.LogInformation(
+            _logger.Log(
+                logLevel,
                 "[DATABASE] → {QueryType} | Query:{Query} | Consistency:QUORUM",
                 queryType,
                 query.Length > 100 ? query.Substring(0, 100) + "..." : query);
@@ -105,7 +110,10 @@ public class CassandraService : IDisposable
             var result = _session.Execute(statement);
             
             stopwatch.Stop();
-            _logger.LogInformation(
+            
+            // Use same log level as request (Debug for health checks, Information for others)
+            _logger.Log(
+                logLevel,
                 "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:QUORUM | {ElapsedMs}ms",
                 queryType,
                 stopwatch.ElapsedMilliseconds);
@@ -128,7 +136,13 @@ public class CassandraService : IDisposable
             var result = _session.Execute(fallbackStatement);
             
             fallbackStopwatch.Stop();
-            _logger.LogInformation(
+            
+            // Use same log level as request (Debug for health checks, Information for others)
+            var isHealthCheck = query.Contains("SELECT now() FROM system.local");
+            var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
+            
+            _logger.Log(
+                logLevel,
                 "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:ONE (fallback) | {ElapsedMs}ms",
                 queryType,
                 fallbackStopwatch.ElapsedMilliseconds);
