@@ -25,10 +25,11 @@ public class BooksController : ControllerBase
     }
 
     private static string CacheKey(Guid id) => $"book:{id}";
+    private const string AllBooksCacheKey = "books:all";
 
     // CREATE
     [HttpPost]
-    public IActionResult CreateBook([FromBody] BookCreateRequest request)
+    public async Task<IActionResult> CreateBook([FromBody] BookCreateRequest request)
     {
         try
         {
@@ -39,13 +40,20 @@ public class BooksController : ControllerBase
                 bookId, request.Title, request.Author, request.Year
             );
 
-            _cache.SetAsync(CacheKey(bookId), new Book
+            var newBook = new Book
             {
                 Id = bookId,
                 Title = request.Title,
                 Author = request.Author,
                 Year = request.Year
-            });
+            };
+
+            // Cache the new book
+            await _cache.SetAsync(CacheKey(bookId), newBook);
+            
+            // Invalidate the all books cache since we added a new book
+            await _cache.RemoveAsync(AllBooksCacheKey);
+            _logger.LogInformation("[CACHE] 🗑️ INVALIDATED | Key:{CacheKey} | Reason:New book created", AllBooksCacheKey);
 
             return Ok(new { id = bookId, message = "Book created" });
         }
@@ -67,22 +75,42 @@ public class BooksController : ControllerBase
         }
     }
 
-    // READ ALL
+    // READ ALL + CACHE
     [HttpGet]
-    public IActionResult GetBooks()
+    public async Task<IActionResult> GetBooks()
     {
         try
         {
-            var rows = _cassandraService.ExecuteWithFallback("SELECT * FROM books");
-
-            var books = rows.Select(row => new Book
+            // Try to get from cache first
+            var cachedBooks = await _cache.TryGetAsync<List<Book>>(AllBooksCacheKey);
+            if (cachedBooks.HasValue)
             {
-                Id = row.GetValue<Guid>("id"),
-                Title = row.GetValue<string>("title"),
-                Author = row.GetValue<string>("author"),
-                Year = row.GetValue<int>("year")
-            }).ToList();
+                _logger.LogInformation("[CACHE] ✅ HIT | Key:{CacheKey} | Count:{Count}", AllBooksCacheKey, cachedBooks.Value.Count);
+                return Ok(cachedBooks.Value);
+            }
 
+            // CACHE MISS - get from database
+            _logger.LogInformation("[CACHE] ❌ MISS | Key:{CacheKey} | Fetching from database...", AllBooksCacheKey);
+            
+            var books = await _cache.GetOrSetAsync(
+                AllBooksCacheKey,
+                async _ =>
+                {
+                    _logger.LogInformation("[CACHE] 🔄 FETCHING | Key:{CacheKey} | Querying database...", AllBooksCacheKey);
+                    var rows = _cassandraService.ExecuteWithFallback("SELECT * FROM books");
+
+                    return rows.Select(row => new Book
+                    {
+                        Id = row.GetValue<Guid>("id"),
+                        Title = row.GetValue<string>("title"),
+                        Author = row.GetValue<string>("author"),
+                        Year = row.GetValue<int>("year")
+                    }).ToList();
+                },
+                TimeSpan.FromMinutes(5)
+            );
+
+            _logger.LogInformation("[CACHE] ✅ SET | Key:{CacheKey} | Count:{Count} | Cached for 5 minutes", AllBooksCacheKey, books.Count);
             return Ok(books);
         }
         catch (UnavailableException)
@@ -197,6 +225,10 @@ public class BooksController : ControllerBase
                 Author = request.Author,
                 Year = request.Year
             });
+            
+            // Invalidate the all books cache since we updated a book
+            await _cache.RemoveAsync(AllBooksCacheKey);
+            _logger.LogInformation("[CACHE] 🗑️ INVALIDATED | Key:{CacheKey} | Reason:Book updated", AllBooksCacheKey);
 
             return Ok(new { message = "Book updated" });
         }
@@ -238,6 +270,10 @@ public class BooksController : ControllerBase
             );
 
             await _cache.RemoveAsync(CacheKey(bookId));
+            
+            // Invalidate the all books cache since we deleted a book
+            await _cache.RemoveAsync(AllBooksCacheKey);
+            _logger.LogInformation("[CACHE] 🗑️ INVALIDATED | Key:{CacheKey} | Reason:Book deleted", AllBooksCacheKey);
 
             return Ok(new { message = "Book deleted" });
         }

@@ -14,7 +14,7 @@ services:
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack1
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - CASSANDRA_SEEDS=cassandra,cassandra2
+      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
     volumes:
@@ -42,7 +42,7 @@ services:
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack2
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - CASSANDRA_SEEDS=cassandra,cassandra2
+      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
     volumes:
@@ -59,35 +59,36 @@ services:
       retries: 5
       start_period: 60s
 
-  cassandra-init:
+  cassandra3:
     image: cassandra:4.1
-    container_name: smartproxy-cassandra-init
-    depends_on:
-      cassandra:
-        condition: service_healthy
-      cassandra2:
-        condition: service_healthy
+    container_name: smartproxy-cassandra3
+    ports:
+      - "9044:9042"  # CQL native transport (port diferit pentru acces local)
+      - "7004:7000"  # Inter-node communication
+      - "7005:7001"  # TLS inter-node communication
+      - "7201:7199"  # JMX
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack3
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3,cassandra3
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
     volumes:
-      - ./cassandra-init:/scripts
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        echo "Waiting for Cassandra nodes to be ready..."
-        until cqlsh cassandra -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
-          echo "Cassandra node 1 is not ready yet. Waiting..."
-          sleep 2
-        done
-        until cqlsh cassandra2 -e "DESCRIBE KEYSPACES" > /dev/null 2>&1; do
-          echo "Cassandra node 2 is not ready yet. Waiting..."
-          sleep 2
-        done
-        echo "Both Cassandra nodes are ready! Waiting for cluster to stabilize..."
-        sleep 10
-        echo "Executing initialization scripts..."
-        cqlsh cassandra -f /scripts/01-init-keyspace.cql
-        echo "Initialization complete!"
+      - cassandra3-data:/var/lib/cassandra
+      - ./cassandra-backups:/backups
+    depends_on:
+      - cassandra
+      - cassandra2
     networks:
       - smartproxy-network
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   redis:
     image: redis:7-alpine
@@ -122,7 +123,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Cassandra__Hosts=cassandra,cassandra2
+      - Cassandra__Hosts=cassandra,cassandra2,cassandra3
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -133,6 +134,8 @@ services:
       cassandra:
         condition: service_healthy
       cassandra2:
+        condition: service_healthy
+      cassandra3:
         condition: service_healthy
     networks:
       - smartproxy-network
@@ -153,7 +156,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Cassandra__Hosts=cassandra,cassandra2
+      - Cassandra__Hosts=cassandra,cassandra2,cassandra3
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -164,6 +167,8 @@ services:
       cassandra:
         condition: service_healthy
       cassandra2:
+        condition: service_healthy
+      cassandra3:
         condition: service_healthy
     networks:
       - smartproxy-network
@@ -184,7 +189,7 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      - Cassandra__Hosts=cassandra,cassandra2
+      - Cassandra__Hosts=cassandra,cassandra2,cassandra3
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -195,6 +200,8 @@ services:
       cassandra:
         condition: service_healthy
       cassandra2:
+        condition: service_healthy
+      cassandra3:
         condition: service_healthy
     networks:
       - smartproxy-network
@@ -228,6 +235,8 @@ volumes:
   cassandra-data:
     driver: local
   cassandra2-data:
+    driver: local
+  cassandra3-data:
     driver: local
   redis-data:
     driver: local

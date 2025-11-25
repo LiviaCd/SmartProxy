@@ -44,7 +44,7 @@ public class CassandraService : IDisposable
                 CREATE KEYSPACE IF NOT EXISTS {keyspace}
                 WITH replication = {{
                     'class': 'SimpleStrategy',
-                    'replication_factor': 2
+                    'replication_factor': 3
                 }}"));
             
             _logger.LogInformation("Keyspace '{Keyspace}' created or already exists", keyspace);
@@ -81,8 +81,15 @@ public class CassandraService : IDisposable
     public Cassandra.ISession Session => _session;
 
     /// <summary>
-    /// Executes a parameterized statement with automatic fallback from QUORUM to ONE.
-    /// Tries QUORUM first for strong consistency, falls back to ONE if quorum is unavailable.
+    /// Executes a parameterized statement with automatic fallback strategy:
+    /// QUORUM → LOCAL_QUORUM → ONE
+    /// 
+    /// With 3 nodes and replication_factor: 3:
+    /// - QUORUM: Requires 2 out of 3 nodes (strong consistency, best for reads)
+    /// - LOCAL_QUORUM: Requires 2 out of 3 nodes in local datacenter (same as QUORUM for single DC)
+    /// - ONE: Requires only 1 node (weakest consistency, maximum availability)
+    /// 
+    /// This ensures maximum availability while maintaining data consistency when possible.
     /// </summary>
     public RowSet ExecuteWithFallback(string query, params object[] values)
     {
@@ -91,27 +98,24 @@ public class CassandraService : IDisposable
         // Extract query type for logging
         var queryType = query.TrimStart().Substring(0, Math.Min(6, query.TrimStart().Length)).ToUpper();
         
+        // Check if this is a health check query (less verbose logging)
+        var isHealthCheck = query.Contains("SELECT now() FROM system.local");
+        var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
+        
+        // STEP 1: Try QUORUM first (requires 2/3 nodes - strong consistency)
         try
         {
-            // Check if this is a health check query (less verbose logging)
-            var isHealthCheck = query.Contains("SELECT now() FROM system.local");
-            var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
-            
-            // Log database request
             _logger.Log(
                 logLevel,
-                "[DATABASE] → {QueryType} | Query:{Query} | Consistency:QUORUM",
+                "[DATABASE] → {QueryType} | Query:{Query} | Consistency:QUORUM (2/3 nodes required)",
                 queryType,
                 query.Length > 100 ? query.Substring(0, 100) + "..." : query);
             
-            // Try with QUORUM first for strong consistency
             var statement = new SimpleStatement(query, values);
             statement.SetConsistencyLevel(ConsistencyLevel.Quorum);
             var result = _session.Execute(statement);
             
             stopwatch.Stop();
-            
-            // Use same log level as request (Debug for health checks, Information for others)
             _logger.Log(
                 logLevel,
                 "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:QUORUM | {ElapsedMs}ms",
@@ -123,31 +127,51 @@ public class CassandraService : IDisposable
         catch (UnavailableException ex)
         {
             stopwatch.Stop();
-            
-            // If quorum is unavailable, fallback to ONE consistency for availability
             _logger.LogWarning(
-                "[DATABASE] ⚠️ QUORUM unavailable, falling back to ONE | Query:{Query} | Error:{Error}",
+                "[DATABASE] ⚠️ QUORUM unavailable (need 2/3 nodes), trying LOCAL_QUORUM | Query:{Query} | Error:{Error}",
                 query.Length > 100 ? query.Substring(0, 100) + "..." : query,
                 ex.Message);
             
-            var fallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
-            var fallbackStatement = new SimpleStatement(query, values);
-            fallbackStatement.SetConsistencyLevel(ConsistencyLevel.One);
-            var result = _session.Execute(fallbackStatement);
-            
-            fallbackStopwatch.Stop();
-            
-            // Use same log level as request (Debug for health checks, Information for others)
-            var isHealthCheck = query.Contains("SELECT now() FROM system.local");
-            var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
-            
-            _logger.Log(
-                logLevel,
-                "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:ONE (fallback) | {ElapsedMs}ms",
-                queryType,
-                fallbackStopwatch.ElapsedMilliseconds);
-            
-            return result;
+            // STEP 2: Fallback to LOCAL_QUORUM (requires 2/3 nodes in local DC)
+            // For single datacenter, this is equivalent to QUORUM but provides better error context
+            try
+            {
+                var fallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var fallbackStatement = new SimpleStatement(query, values);
+                fallbackStatement.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
+                var result = _session.Execute(fallbackStatement);
+                
+                fallbackStopwatch.Stop();
+                _logger.Log(
+                    logLevel,
+                    "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:LOCAL_QUORUM (fallback) | {ElapsedMs}ms",
+                    queryType,
+                    fallbackStopwatch.ElapsedMilliseconds);
+                
+                return result;
+            }
+            catch (UnavailableException ex2)
+            {
+                _logger.LogWarning(
+                    "[DATABASE] ⚠️ LOCAL_QUORUM unavailable (need 2/3 nodes), falling back to ONE | Query:{Query} | Error:{Error}",
+                    query.Length > 100 ? query.Substring(0, 100) + "..." : query,
+                    ex2.Message);
+                
+                // STEP 3: Final fallback to ONE (requires only 1 node - maximum availability)
+                var finalFallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var finalFallbackStatement = new SimpleStatement(query, values);
+                finalFallbackStatement.SetConsistencyLevel(ConsistencyLevel.One);
+                var result = _session.Execute(finalFallbackStatement);
+                
+                finalFallbackStopwatch.Stop();
+                _logger.Log(
+                    logLevel,
+                    "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:ONE (final fallback - 1/3 nodes) | {ElapsedMs}ms",
+                    queryType,
+                    finalFallbackStopwatch.ElapsedMilliseconds);
+                
+                return result;
+            }
         }
         catch (Exception ex)
         {
