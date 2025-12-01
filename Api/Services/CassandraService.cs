@@ -1,4 +1,5 @@
 using Cassandra;
+using System.Collections.Generic;
 
 namespace Api.Services;
 
@@ -52,6 +53,51 @@ public class CassandraService : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error creating keyspace '{Keyspace}', it may already exist", keyspace);
+        }
+        
+        // Ensure keyspace has replication_factor: 3 for high availability
+        // This is critical: if replication_factor is 1, one node failure makes data unavailable
+        try
+        {
+            var keyspaceInfo = sessionWithoutKeyspace.Execute(new SimpleStatement(
+                $"SELECT replication FROM system_schema.keyspaces WHERE keyspace_name = '{keyspace}'"));
+            
+            var row = keyspaceInfo.FirstOrDefault();
+            if (row != null)
+            {
+                var replication = row.GetValue<IDictionary<string, string>>("replication");
+                if (replication != null && replication.ContainsKey("replication_factor"))
+                {
+                    var currentReplicationFactor = int.Parse(replication["replication_factor"]);
+                    if (currentReplicationFactor < 3)
+                    {
+                        _logger.LogWarning(
+                            "Keyspace '{Keyspace}' has replication_factor: {CurrentRF}, updating to 3 for high availability",
+                            keyspace, currentReplicationFactor);
+                        
+                        sessionWithoutKeyspace.Execute(new SimpleStatement($@"
+                            ALTER KEYSPACE {keyspace}
+                            WITH replication = {{
+                                'class': 'SimpleStrategy',
+                                'replication_factor': 3
+                            }}"));
+                        
+                        _logger.LogInformation(
+                            "Keyspace '{Keyspace}' updated to replication_factor: 3. Run 'nodetool repair {Keyspace}' on all nodes to replicate data.",
+                            keyspace, keyspace);
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "Keyspace '{Keyspace}' already has replication_factor: {CurrentRF} (optimal for 3-node cluster)",
+                            keyspace, currentReplicationFactor);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not verify/update keyspace replication factor for '{Keyspace}'", keyspace);
         }
 
         // Now connect to the keyspace
