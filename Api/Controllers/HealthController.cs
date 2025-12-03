@@ -35,7 +35,7 @@ public class HealthController : ControllerBase
         catch (Exception e)
         {
             _logger.LogError(e, "Health check: Cassandra connection failed");
-            return Ok(new
+            return StatusCode(503, new
             {
                 status = "unhealthy",
                 timestamp = DateTime.UtcNow.ToString("O"),
