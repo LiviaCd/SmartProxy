@@ -1,241 +1,177 @@
-using Cassandra;
-using System.Collections.Generic;
+﻿using Cassandra;
 
 namespace Api.Services;
 
 public class CassandraService : IDisposable
 {
-    private readonly ICluster _cluster;
-    private readonly Cassandra.ISession _session;
+    private ICluster? _cluster;
+    private Cassandra.ISession? _session;
     private readonly ILogger<CassandraService> _logger;
+    private bool _initialized = false;
+    private readonly IConfiguration _configuration;
 
     public CassandraService(IConfiguration configuration, ILogger<CassandraService> logger)
     {
         _logger = logger;
-        
-        var hosts = configuration["Cassandra:Hosts"]?.Split(",") ?? new[] { "127.0.0.1" };
-        var keyspace = configuration["Cassandra:Keyspace"] ?? "techframer";
-        var localDc = configuration["Cassandra:LocalDatacenter"] ?? "datacenter1";
-
-        // Configure load balancing policy
-        // TokenAwarePolicy - routes requests to the node that owns the data (token-aware)
-        // DCAwareRoundRobinPolicy - distributes requests round-robin in datacenter
-        var loadBalancingPolicy = new TokenAwarePolicy(
-            new DCAwareRoundRobinPolicy(localDc)
-        );
-
-        // Configure retry policy
-        var retryPolicy = new DefaultRetryPolicy();
-
-        // Create cluster with load balancing
-        // Protocol version is negotiated automatically by the driver
-        _cluster = Cluster.Builder()
-            .AddContactPoints(hosts)
-            .WithLoadBalancingPolicy(loadBalancingPolicy)
-            .WithRetryPolicy(retryPolicy)
-            .Build();
-
-        // Connect without keyspace first to check/create it
-        var sessionWithoutKeyspace = _cluster.Connect();
-        
-        // Create keyspace if it doesn't exist
-        try
-        {
-            sessionWithoutKeyspace.Execute(new SimpleStatement($@"
-                CREATE KEYSPACE IF NOT EXISTS {keyspace}
-                WITH replication = {{
-                    'class': 'SimpleStrategy',
-                    'replication_factor': 3
-                }}"));
-            
-            _logger.LogInformation("Keyspace '{Keyspace}' created or already exists", keyspace);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Error creating keyspace '{Keyspace}', it may already exist", keyspace);
-        }
-        
-        // Ensure keyspace has replication_factor: 3 for high availability
-        // This is critical: if replication_factor is 1, one node failure makes data unavailable
-        try
-        {
-            var keyspaceInfo = sessionWithoutKeyspace.Execute(new SimpleStatement(
-                $"SELECT replication FROM system_schema.keyspaces WHERE keyspace_name = '{keyspace}'"));
-            
-            var row = keyspaceInfo.FirstOrDefault();
-            if (row != null)
-            {
-                var replication = row.GetValue<IDictionary<string, string>>("replication");
-                if (replication != null && replication.ContainsKey("replication_factor"))
-                {
-                    var currentReplicationFactor = int.Parse(replication["replication_factor"]);
-                    if (currentReplicationFactor < 3)
-                    {
-                        _logger.LogWarning(
-                            "Keyspace '{Keyspace}' has replication_factor: {CurrentRF}, updating to 3 for high availability",
-                            keyspace, currentReplicationFactor);
-                        
-                        sessionWithoutKeyspace.Execute(new SimpleStatement($@"
-                            ALTER KEYSPACE {keyspace}
-                            WITH replication = {{
-                                'class': 'SimpleStrategy',
-                                'replication_factor': 3
-                            }}"));
-                        
-                        _logger.LogInformation(
-                            "Keyspace '{Keyspace}' updated to replication_factor: 3. Run 'nodetool repair {Keyspace}' on all nodes to replicate data.",
-                            keyspace, keyspace);
-                    }
-                    else
-                    {
-                        _logger.LogInformation(
-                            "Keyspace '{Keyspace}' already has replication_factor: {CurrentRF} (optimal for 3-node cluster)",
-                            keyspace, currentReplicationFactor);
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not verify/update keyspace replication factor for '{Keyspace}'", keyspace);
-        }
-
-        // Now connect to the keyspace
-        _session = _cluster.Connect(keyspace);
-        
-        // Create books table if it doesn't exist
-        try
-        {
-            _session.Execute(new SimpleStatement(@"
-                CREATE TABLE IF NOT EXISTS books (
-                    id UUID PRIMARY KEY,
-                    title TEXT,
-                    author TEXT,
-                    year INT
-                )"));
-            
-            _logger.LogInformation("Table 'books' created or already exists");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Error creating table 'books', it may already exist");
-        }
-        
-        sessionWithoutKeyspace.Dispose();
+        _configuration = configuration;
     }
 
-    public Cassandra.ISession Session => _session;
-
-    /// <summary>
-    /// Executes a parameterized statement with automatic fallback strategy:
-    /// QUORUM → LOCAL_QUORUM → ONE
-    /// 
-    /// With 3 nodes and replication_factor: 3:
-    /// - QUORUM: Requires 2 out of 3 nodes (strong consistency, best for reads)
-    /// - LOCAL_QUORUM: Requires 2 out of 3 nodes in local datacenter (same as QUORUM for single DC)
-    /// - ONE: Requires only 1 node (weakest consistency, maximum availability)
-    /// 
-    /// This ensures maximum availability while maintaining data consistency when possible.
-    /// </summary>
-    public RowSet ExecuteWithFallback(string query, params object[] values)
+    private void EnsureConnected()
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        if (_initialized) return;
         
-        // Extract query type for logging
-        var queryType = query.TrimStart().Substring(0, Math.Min(6, query.TrimStart().Length)).ToUpper();
-        
-        // Check if this is a health check query (less verbose logging)
-        var isHealthCheck = query.Contains("SELECT now() FROM system.local");
-        var logLevel = isHealthCheck ? LogLevel.Debug : LogLevel.Information;
-        
-        // STEP 1: Try QUORUM first (requires 2/3 nodes - strong consistency)
-        try
+        lock (this)
         {
-            _logger.Log(
-                logLevel,
-                "[DATABASE] → {QueryType} | Query:{Query} | Consistency:QUORUM (2/3 nodes required)",
-                queryType,
-                query.Length > 100 ? query.Substring(0, 100) + "..." : query);
+            if (_initialized) return;
             
-            var statement = new SimpleStatement(query, values);
-            statement.SetConsistencyLevel(ConsistencyLevel.Quorum);
-            var result = _session.Execute(statement);
-            
-            stopwatch.Stop();
-            _logger.Log(
-                logLevel,
-                "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:QUORUM | {ElapsedMs}ms",
-                queryType,
-                stopwatch.ElapsedMilliseconds);
-            
-            return result;
-        }
-        catch (UnavailableException ex)
-        {
-            stopwatch.Stop();
-            _logger.LogWarning(
-                "[DATABASE] ⚠️ QUORUM unavailable (need 2/3 nodes), trying LOCAL_QUORUM | Query:{Query} | Error:{Error}",
-                query.Length > 100 ? query.Substring(0, 100) + "..." : query,
-                ex.Message);
-            
-            // STEP 2: Fallback to LOCAL_QUORUM (requires 2/3 nodes in local DC)
-            // For single datacenter, this is equivalent to QUORUM but provides better error context
             try
             {
-                var fallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var fallbackStatement = new SimpleStatement(query, values);
-                fallbackStatement.SetConsistencyLevel(ConsistencyLevel.LocalQuorum);
-                var result = _session.Execute(fallbackStatement);
+                // FIXED: Folosește hostname-uri Docker în loc de IP-uri
+                var hostsConfig = _configuration["Cassandra:Hosts"] ?? "cassandra,cassandra2,cassandra3";
+                var hosts = hostsConfig.Split(",", StringSplitOptions.RemoveEmptyEntries)
+                    .Select(h => h.Trim())
+                    .ToArray();
                 
-                fallbackStopwatch.Stop();
-                _logger.Log(
-                    logLevel,
-                    "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:LOCAL_QUORUM (fallback) | {ElapsedMs}ms",
-                    queryType,
-                    fallbackStopwatch.ElapsedMilliseconds);
+                var keyspace = _configuration["Cassandra:Keyspace"] ?? "techframer";
+                var port = int.Parse(_configuration["Cassandra:Port"] ?? "9042");
                 
-                return result;
+                // FIXED: Datacenter-ul corect din docker-compose
+                var datacenter = _configuration["Cassandra:LocalDatacenter"] ?? "datacenter1";
+                
+                var username = _configuration["Cassandra:Username"];
+                var password = _configuration["Cassandra:Password"];
+
+                _logger.LogInformation("🔄 Connecting to Cassandra: [{Hosts}]:{Port} (DC: {Datacenter})", 
+                    string.Join(", ", hosts), port, datacenter);
+
+                var builder = Cluster.Builder()
+                    .AddContactPoints(hosts)
+                    .WithPort(port)
+                    // IMPORTANT: Permite conexiuni la toate nodurile din cluster
+                    .WithLoadBalancingPolicy(new DCAwareRoundRobinPolicy(datacenter))
+                    .WithReconnectionPolicy(new ConstantReconnectionPolicy(2000))
+                    .WithQueryTimeout(30000)
+                    .WithSocketOptions(new SocketOptions()
+                        .SetConnectTimeoutMillis(10000)
+                        .SetReadTimeoutMillis(30000)
+                    )
+                    // ADDED: Configurări suplimentare pentru stabilitate
+                    .WithQueryOptions(new QueryOptions()
+                        .SetConsistencyLevel(ConsistencyLevel.One)
+                    )
+                    .WithPoolingOptions(new PoolingOptions()
+                        .SetCoreConnectionsPerHost(HostDistance.Local, 2)
+                        .SetMaxConnectionsPerHost(HostDistance.Local, 4)
+                    );
+
+                // Autentificare (Cassandra 4.1 din Docker nu necesită credentials by default)
+                if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
+                {
+                    _logger.LogInformation("🔐 Using authentication (user: {Username})", username);
+                    builder = builder.WithCredentials(username, password);
+                }
+                else
+                {
+                    _logger.LogInformation("ℹ️ No credentials provided (using default Cassandra setup)");
+                }
+
+                _cluster = builder.Build();
+
+                _logger.LogInformation("🔌 Attempting connection to cluster...");
+                
+                // Conectează-te la cluster fără keyspace specific
+                var tempSession = _cluster.Connect();
+                _logger.LogInformation("✅ Connected to Cassandra cluster");
+
+                // Creează keyspace cu replication factor adecvat
+                var replicationFactor = hosts.Length >= 3 ? 3 : hosts.Length;
+                var createKeyspace = $@"
+                    CREATE KEYSPACE IF NOT EXISTS {keyspace}
+                    WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {replicationFactor}}}
+                    AND durable_writes = true
+                ";
+                
+                _logger.LogInformation("📦 Creating/verifying keyspace: {Keyspace} (RF: {RF})", 
+                    keyspace, replicationFactor);
+                tempSession.Execute(createKeyspace);
+                _logger.LogInformation("✅ Keyspace ready: {Keyspace}", keyspace);
+
+                // Conectează-te la keyspace specific
+                _session = _cluster.Connect(keyspace);
+                
+                // Creează tabela
+                _session.Execute(@"
+                    CREATE TABLE IF NOT EXISTS books (
+                        id UUID PRIMARY KEY,
+                        title TEXT,
+                        author TEXT,
+                        year INT
+                    )
+                ");
+                _logger.LogInformation("✅ Table 'books' ready");
+
+                tempSession.Dispose();
+                _initialized = true;
+                
+                // Afișează informații despre cluster
+                var metadata = _cluster.Metadata;
+                var allHosts = metadata.AllHosts();
+                _logger.LogInformation("🎉 Cassandra initialized! Connected to {Count} host(s):", allHosts.Count);
+                foreach (var host in allHosts)
+                {
+                    _logger.LogInformation("  📍 {Address} - Datacenter: {DC}, Rack: {Rack}, State: {State}", 
+                        host.Address, host.Datacenter, host.Rack, host.IsUp ? "UP" : "DOWN");
+                }
             }
-            catch (UnavailableException ex2)
+            catch (Exception ex)
             {
-                _logger.LogWarning(
-                    "[DATABASE] ⚠️ LOCAL_QUORUM unavailable (need 2/3 nodes), falling back to ONE | Query:{Query} | Error:{Error}",
-                    query.Length > 100 ? query.Substring(0, 100) + "..." : query,
-                    ex2.Message);
-                
-                // STEP 3: Final fallback to ONE (requires only 1 node - maximum availability)
-                var finalFallbackStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var finalFallbackStatement = new SimpleStatement(query, values);
-                finalFallbackStatement.SetConsistencyLevel(ConsistencyLevel.One);
-                var result = _session.Execute(finalFallbackStatement);
-                
-                finalFallbackStopwatch.Stop();
-                _logger.Log(
-                    logLevel,
-                    "[DATABASE] ← {QueryType} | ✅ SUCCESS | Consistency:ONE (final fallback - 1/3 nodes) | {ElapsedMs}ms",
-                    queryType,
-                    finalFallbackStopwatch.ElapsedMilliseconds);
-                
-                return result;
+                _logger.LogError(ex, "❌ Failed to connect to Cassandra: {Message}", ex.Message);
+                _initialized = false;
+                throw new InvalidOperationException(
+                    $"Could not connect to Cassandra. Make sure the cluster is running and accessible. Error: {ex.Message}", 
+                    ex);
             }
+        }
+    }
+
+    public Cassandra.ISession Session 
+    { 
+        get 
+        {
+            EnsureConnected();
+            return _session!;
+        }
+    }
+
+    public RowSet ExecuteWithFallback(string query, params object[] values)
+    {
+        EnsureConnected();
+        var statement = new SimpleStatement(query, values);
+        statement.SetConsistencyLevel(ConsistencyLevel.One);
+        
+        try
+        {
+            return _session!.Execute(statement);
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
-            _logger.LogError(
-                ex,
-                "[DATABASE] ← {QueryType} | ❌ ERROR | Query:{Query} | {ElapsedMs}ms",
-                queryType,
-                query.Length > 100 ? query.Substring(0, 100) + "..." : query,
-                stopwatch.ElapsedMilliseconds);
+            _logger.LogError(ex, "❌ Query failed: {Query}", query);
             throw;
         }
     }
 
     public void Dispose()
     {
-        _session?.Dispose();
-        _cluster?.Dispose();
+        if (_session != null)
+        {
+            _logger.LogInformation("🔌 Closing Cassandra session...");
+            _session.Dispose();
+        }
+        
+        if (_cluster != null)
+        {
+            _logger.LogInformation("🔌 Closing Cassandra cluster connection...");
+            _cluster.Dispose();
+        }
     }
 }
-

@@ -2,8 +2,10 @@ using Api.Models;
 using Api.Services;
 using Cassandra;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Hosting;
 using System.Threading.Tasks;
 using System;
+using System.Linq;
 using ZiggyCreatures.Caching.Fusion;
 using Microsoft.Extensions.Logging;
 
@@ -16,12 +18,14 @@ public class BooksController : ControllerBase
     private readonly CassandraService _cassandraService;
     private readonly IFusionCache _cache;
     private readonly ILogger<BooksController> _logger;
+    private readonly IWebHostEnvironment _environment;
 
-    public BooksController(CassandraService cassandraService, IFusionCache cache, ILogger<BooksController> logger)
+    public BooksController(CassandraService cassandraService, IFusionCache cache, ILogger<BooksController> logger, IWebHostEnvironment environment)
     {
         _cassandraService = cassandraService;
         _cache = cache;
         _logger = logger;
+        _environment = environment;
     }
 
     private static string CacheKey(Guid id) => $"book:{id}";
@@ -65,12 +69,14 @@ public class BooksController : ControllerBase
                 error = "Service Unavailable"
             });
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Error creating book: {Message}", ex.Message);
             return StatusCode(500, new
             {
-                detail = "An error occurred while creating the book.",
-                error = "Internal Server Error"
+                detail = $"An error occurred while creating the book: {ex.Message}",
+                error = "Internal Server Error",
+                exception = _environment.IsDevelopment() ? ex.ToString() : null
             });
         }
     }
@@ -99,13 +105,18 @@ public class BooksController : ControllerBase
                     _logger.LogInformation("[CACHE] 🔄 FETCHING | Key:{CacheKey} | Querying database...", AllBooksCacheKey);
                     var rows = _cassandraService.ExecuteWithFallback("SELECT * FROM books");
 
-                    return rows.Select(row => new Book
+                    var booksList = new List<Book>();
+                    foreach (var row in rows)
                     {
-                        Id = row.GetValue<Guid>("id"),
-                        Title = row.GetValue<string>("title"),
-                        Author = row.GetValue<string>("author"),
-                        Year = row.GetValue<int>("year")
-                    }).ToList();
+                        booksList.Add(new Book
+                        {
+                            Id = row.GetValue<Guid>("id"),
+                            Title = row.GetValue<string>("title"),
+                            Author = row.GetValue<string>("author"),
+                            Year = row.GetValue<int>("year")
+                        });
+                    }
+                    return booksList;
                 },
                 TimeSpan.FromMinutes(5)
             );
@@ -113,20 +124,23 @@ public class BooksController : ControllerBase
             _logger.LogInformation("[CACHE] ✅ SET | Key:{CacheKey} | Count:{Count} | Cached for 5 minutes", AllBooksCacheKey, books.Count);
             return Ok(books);
         }
-        catch (UnavailableException)
+        catch (UnavailableException ex)
         {
+            _logger.LogError(ex, "Cassandra unavailable exception");
             return StatusCode(503, new
             {
                 detail = "Database temporarily unavailable. Please try again later.",
                 error = "Service Unavailable"
             });
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Error reading books: {Message}", ex.Message);
             return StatusCode(500, new
             {
-                detail = "An error occurred while reading books.",
-                error = "Internal Server Error"
+                detail = $"An error occurred while reading books: {ex.Message}",
+                error = "Internal Server Error",
+                exception = _environment.IsDevelopment() ? ex.ToString() : null
             });
         }
     }
@@ -155,11 +169,12 @@ public class BooksController : ControllerBase
                 async _ =>
                 {
                     _logger.LogInformation("[CACHE] 🔄 FETCHING | Key:{CacheKey} | BookId:{BookId} | Querying database...", cacheKey, bookId);
-                    var row = _cassandraService.ExecuteWithFallback(
+                    var rows = _cassandraService.ExecuteWithFallback(
                         "SELECT * FROM books WHERE id = ?",
                         bookId
-                    ).FirstOrDefault();
+                    );
 
+                    var row = rows.FirstOrDefault();
                     if (row == null)
                         return null;
 

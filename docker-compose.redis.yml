@@ -1,0 +1,40 @@
+version: '3.8'
+
+# ============================================================================
+# Redis Cache
+# ============================================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: smartproxy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./redis-backups:/backups
+      - ./redis-users.acl:/usr/local/etc/redis/users.acl
+    networks:
+      - smartproxy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync always
+      --save ""
+      --dir /data
+      --aclfile /usr/local/etc/redis/users.acl
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  smartproxy-network:
+    external: true
+

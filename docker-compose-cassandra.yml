@@ -1,69 +1,57 @@
 version: '3.8'
 
 # ============================================================================
-# ARHITECTURĂ: Cassandra rulează ca SERVICII SEPARATE de API
-# ============================================================================
-# - Cassandra: 3 noduri separate (cassandra, cassandra2, cassandra3)
-# - API: 3 instanțe separate (api1, api2, api3) care se conectează la Cassandra
-# - Toate serviciile sunt pe aceeași rețea Docker (smartproxy-network)
-# - API-ul se conectează la Cassandra folosind numele containerelor
+# SOLUȚIE COMPLETĂ: Cassandra + API + HAProxy într-un singur fișier
 # ============================================================================
 
 services:
+  # ========== CASSANDRA CLUSTER (3 noduri) ==========
   cassandra:
     image: cassandra:4.1
     container_name: smartproxy-cassandra
     ports:
-      - "9042:9042"  # CQL native transport
-      - "7000:7000"  # Inter-node communication
-      - "7001:7001"  # TLS inter-node communication
-      - "7199:7199"  # JMX
+      - "9042:9042"
+      - "7000:7000"
+      - "7199:7199"
     environment:
       - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack1
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3
+      - CASSANDRA_SEEDS=cassandra
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
       - CASSANDRA_NUM_TOKENS=256
-      - CASSANDRA_AUTO_BOOTSTRAP=true
     volumes:
       - cassandra-data:/var/lib/cassandra
-      - ./cassandra-backups:/backups
-      - ./cassandra-init:/docker-entrypoint-initdb.d
     networks:
       - smartproxy-network
     healthcheck:
       test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 90s
     restart: unless-stopped
 
   cassandra2:
     image: cassandra:4.1
     container_name: smartproxy-cassandra2
     ports:
-      - "9043:9042"  # CQL native transport (port diferit pentru acces local)
-      - "7002:7000"  # Inter-node communication
-      - "7003:7001"  # TLS inter-node communication
-      - "7200:7199"  # JMX
+      - "9043:9042"
+      - "7002:7000"
+      - "7200:7199"
     environment:
       - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack2
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3
+      - CASSANDRA_SEEDS=cassandra
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
       - CASSANDRA_NUM_TOKENS=256
-      - CASSANDRA_AUTO_BOOTSTRAP=true
     volumes:
       - cassandra2-data:/var/lib/cassandra
-      - ./cassandra-backups:/backups
-      - ./cassandra-init:/docker-entrypoint-initdb.d
     depends_on:
       cassandra:
         condition: service_healthy
@@ -73,32 +61,28 @@ services:
       test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 90s
     restart: unless-stopped
 
   cassandra3:
     image: cassandra:4.1
     container_name: smartproxy-cassandra3
     ports:
-      - "9044:9042"  # CQL native transport (port diferit pentru acces local)
-      - "7004:7000"  # Inter-node communication
-      - "7005:7001"  # TLS inter-node communication
-      - "7201:7199"  # JMX
+      - "9044:9042"
+      - "7004:7000"
+      - "7201:7199"
     environment:
       - CASSANDRA_CLUSTER_NAME=SmartProxyCluster
       - CASSANDRA_DC=datacenter1
       - CASSANDRA_RACK=rack3
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - CASSANDRA_SEEDS=cassandra,cassandra2,cassandra3
+      - CASSANDRA_SEEDS=cassandra
       - MAX_HEAP_SIZE=512M
       - HEAP_NEWSIZE=100M
       - CASSANDRA_NUM_TOKENS=256
-      - CASSANDRA_AUTO_BOOTSTRAP=true
     volumes:
       - cassandra3-data:/var/lib/cassandra
-      - ./cassandra-backups:/backups
-      - ./cassandra-init:/docker-entrypoint-initdb.d
     depends_on:
       cassandra:
         condition: service_healthy
@@ -110,33 +94,11 @@ services:
       test: ["CMD-SHELL", "nodetool status | grep -E '^UN' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 10
+      start_period: 90s
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: smartproxy-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-      - ./redis-backups:/backups
-      - ./redis-users.acl:/usr/local/etc/redis/users.acl
-    networks:
-      - smartproxy-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    command: >
-      redis-server
-      --appendonly yes
-      --appendfsync always
-      --save ""
-      --dir /data
-      --aclfile /usr/local/etc/redis/users.acl
+  # ========== API INSTANCES (3 pentru HA) ==========
   api1:
     build:
       context: .
@@ -147,8 +109,8 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
-      # Conectare la Cassandra (servicii separate prin numele containerelor)
       - Cassandra__Hosts=cassandra,cassandra2,cassandra3
+      - Cassandra__Port=9042
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -164,12 +126,7 @@ services:
         condition: service_healthy
     networks:
       - smartproxy-network
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 40s
+    restart: unless-stopped
 
   api2:
     build:
@@ -182,6 +139,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
       - Cassandra__Hosts=cassandra,cassandra2,cassandra3
+      - Cassandra__Port=9042
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -197,12 +155,7 @@ services:
         condition: service_healthy
     networks:
       - smartproxy-network
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 40s
+    restart: unless-stopped
 
   api3:
     build:
@@ -215,6 +168,7 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:8080
       - Cassandra__Hosts=cassandra,cassandra2,cassandra3
+      - Cassandra__Port=9042
       - Cassandra__Keyspace=techframer
       - Cassandra__LocalDatacenter=datacenter1
       - Redis__Host=redis-16344.c15.us-east-1-4.ec2.cloud.redislabs.com
@@ -235,8 +189,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
+    restart: unless-stopped
 
+  # ========== HAPROXY LOAD BALANCER ==========
   haproxy:
     build:
       context: ./haproxy
@@ -244,14 +200,11 @@ services:
     container_name: smartproxy-haproxy
     ports:
       - "8080:8080"
-      - "8404:8404"  # Stats page
-    # depends_on:
-    #   api1:
-    #     condition: service_healthy
-    #   api2:
-    #     condition: service_healthy
-    #   api3:
-    #     condition: service_healthy
+      - "8404:8404"
+    depends_on:
+      - api1
+      - api2
+      - api3
     networks:
       - smartproxy-network
     restart: unless-stopped
@@ -262,8 +215,6 @@ volumes:
   cassandra2-data:
     driver: local
   cassandra3-data:
-    driver: local
-  redis-data:
     driver: local
 
 networks:

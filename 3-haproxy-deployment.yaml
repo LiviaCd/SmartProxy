@@ -1,0 +1,105 @@
+﻿apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+data:
+  haproxy.cfg: |
+    global
+        log stdout format raw local0
+        maxconn 4096
+
+    defaults
+        log     global
+        mode    http
+        option  httplog
+        option  dontlognull
+        timeout connect 5000ms
+        timeout client  50000ms
+        timeout server  50000ms
+        retries 3
+        option  redispatch
+
+    frontend http_front
+        bind *:8080
+        default_backend smartproxy_api
+
+    backend smartproxy_api
+        balance roundrobin
+        option httpchk GET /health
+        http-check expect status 200
+        server api1 smartproxy-api:8080 check inter 10s fall 3 rise 2
+        server api2 smartproxy-api:8080 check inter 10s fall 3 rise 2
+        server api3 smartproxy-api:8080 check inter 10s fall 3 rise 2
+
+    listen stats
+        bind *:8404
+        stats enable
+        stats uri /stats
+        stats refresh 30s
+        stats realm Haproxy\ Statistics
+        stats auth admin:admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy
+  labels:
+    app: haproxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+    spec:
+      containers:
+      - name: haproxy
+        image: haproxy:2.8-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8404
+          name: stats
+        volumeMounts:
+        - name: haproxy-config
+          mountPath: /usr/local/etc/haproxy
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /stats
+            port: 8404
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: haproxy-config
+        configMap:
+          name: haproxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: haproxy
+  labels:
+    app: haproxy
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8404
+    targetPort: 8404
+    protocol: TCP
+    name: stats
+  selector:
+    app: haproxy
