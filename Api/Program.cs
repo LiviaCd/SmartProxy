@@ -203,3 +203,5 @@ if (string.IsNullOrEmpty(urls))
 }
 
 app.Run();
+
+public partial class Program { }
